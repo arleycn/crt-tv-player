@@ -1,0 +1,11 @@
+:root {
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-serif: "Songti SC", "STSong", "Noto Serif SC", Georgia, "Times New Roman", serif;
+  --ease: cubic-bezier(0.22, 0.8, 0.22, 1);
+  --red: #c6332a;
+
+  /* 房间与机身配色（与原项目一致的暖棕调） */
+  --paper: #f5e8ce;
+  --ink: #1b1712;
+  --room: #15110d;
+}

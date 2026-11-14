@@ -1,0 +1,989 @@
+/* ==========================================================================
+   CRT 老电视播放器 · 唯一样式来源 src/styles/tv.css
+   --------------------------------------------------------------------------
+   整机 DOM 只在 src/player/CrtTv.tsx；曲线只在 src/player/geometry.ts；
+   管面只在 src/player/tube.ts；播放器视图接口（挂载 / 状态类 / 降级 / 释放）
+   只在 src/player/view.ts；电视机样式只在本文件。
+
+   本文件按零件分层：
+     【A 机壳】.crt / .crt__frame / .crt__bezel（斜面，唯一 4:3 坐标盒 + 机壳外观）
+            / .crt__aperture（斜面内沿的洞）/ .crt__chin
+            只管外观：塑料壳、受光、斜面过渡、下巴按键。零画面、零控制。
+     【B 显示屏幕】.crt__display / .crt__glass / .crt__screen / .crt__tube / .tv__osd
+            只管画面与 CRT 元素，不碰机壳。
+     【C 状态与场景】is-off / is-tube / is-fallback / is-on / is-film / is-hold
+     【播放器 UI】.crtv 容器 / 信号层 / 影片层 / 片源单 / OSD
+
+   装配口径（实物图订正，不许倒回去）：
+     .crt__frame → .crt__bezel（机壳斜面，父）→ .crt__aperture（洞，子）
+                                             → .crt__display → glass + screen
+   斜面是父、开口是子。
+
+   显示屏幕的物理常量只在 B 区定义一次：--crt-glass-ring / --crt-glass-fade。
+   视频 / 信号层 / 管面 / OSD 全部装在内收后的荧光屏盒子里，天然画不到玻璃外圈底下。
+   源片不论多大都在荧光屏内按 contain 显示，不裁剪、不改 4:3。
+   ========================================================================== */
+
+/* ── 播放器根状态（替代原彩蛋的 .egg 全屏覆盖层）──────────────────────────
+   .crtv 是普通文档流容器（见 base.css 的 flex 布局）。状态位：
+     is-on       电视已开机
+     is-film     正在播片（管面可见，信号层让位）
+     is-hold     等待 / 缓冲 / 断流（彩条测试卡 + 一句文案）
+     is-bars     显示彩条（开机与等待态）
+     is-fallback WebGL 挂不上，退回原生 video
+   信号层(.tv__signal) 在「开机且非播放态」可见；管面(.crt__tube) 仅在 is-film 可见。 */
+.crt.is-on:not(.is-film) .tv__signal { opacity: 1; }
+.crt.is-film .tv__signal { opacity: 0; transition-delay: var(--tv-film-fade, 480ms); transition-duration: 240ms; }
+.crt.is-bars .tv__bars,
+.crt.is-hold .tv__bars { opacity: 0.95; }
+.crt.is-hold .tv__bars { animation: tv-hold-card 4.4s steps(1, end) infinite; }
+.crt.is-hold .tv__note { opacity: 1; }
+.crt.is-film .crt__tube { opacity: 1; }
+
+/* ── 信号层：开机亮线 / 无信号雪花 / 彩条测试卡 / 扫描线 ──
+   全部由代码生成（Canvas + 内联 SVG），零素材零请求。
+   它是影片层的底衬：视频没 ready 时始终有画面，冷启动绝不露黑屏。 */
+.tv__signal {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  background: #080808;
+  opacity: 0;
+  transition: opacity 320ms var(--ease);
+  pointer-events: none;
+}
+
+/* 状态文案：压在测试卡下半部那条深色带上，等宽字 + 一点辉光 */
+.tv__note {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 11%;
+  margin: 0;
+  padding: 7px 0;
+  font-family: var(--font-mono);
+  font-size: clamp(11px, 1.5vmin, 14px);
+  letter-spacing: 0.16em;
+  text-align: center;
+  color: #f6efdd;
+  background: rgba(6, 6, 6, 0.82);
+  border-top: 1px solid rgba(246, 239, 221, 0.16);
+  border-bottom: 1px solid rgba(246, 239, 221, 0.16);
+  text-shadow: 0 0 8px rgba(246, 239, 221, 0.4);
+  opacity: 0;
+  transition: opacity 220ms linear;
+}
+.tv__note:empty { display: none; }
+
+/* 雪花：低分辨率 Canvas 放大，pixelated 出老显像管的粗颗粒 */
+.tv__snow {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  opacity: 0.92;
+}
+
+/* 彩条：只在测试卡阶段与「搜台」脉冲里露出来 */
+.tv__bars {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 180ms linear;
+}
+.tv__bars-svg { display: block; width: 100%; height: 100%; }
+
+@keyframes tv-hold-card {
+  0%, 54%, 100% { opacity: 0.95; }
+  56%, 60% { opacity: 0.55; }
+  62% { opacity: 0.95; }
+}
+
+/* 扫描线 + 缓慢下滑的亮带：场同步没锁住的味道 */
+.tv__scan {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.32) 0 1px,
+    transparent 1px 3px
+  );
+  mix-blend-mode: multiply;
+}
+.tv__scan::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22%;
+  background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.13), transparent);
+  animation: tv-roll 3.2s linear infinite;
+}
+@keyframes tv-roll {
+  from { translate: 0 -30%; }
+  to { translate: 0 460%; }
+}
+
+/* 偶发的横向撕裂：克制，不做成闪烁灯 */
+.tv__tear {
+  position: absolute;
+  inset: 0;
+  border-top: 2px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 2px solid rgba(0, 0, 0, 0.22);
+  animation: tv-tear 4.1s steps(1, end) infinite;
+}
+@keyframes tv-tear {
+  0%, 92%, 100% { translate: 0 -120%; opacity: 0; }
+  93% { translate: 0 18%; opacity: 1; }
+  95% { translate: 0 34%; opacity: 1; }
+  97% { translate: 0 62%; opacity: 0; }
+}
+
+/* CRT 开机：一条亮线展开成整屏，再淡出让位给雪花。
+   用 animation 而非 transition：animation 自带 0% 起始帧，不要求浏览器先画过
+   初始态，所以即便 is-power 在插入 DOM 的同一个同步任务里加上也必定播放。 */
+.tv__powerline {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  background: #f6efdd;
+  scale: 1 0.003;
+  opacity: 0;
+  box-shadow: 0 0 40px 12px rgba(246, 239, 221, 0.55);
+}
+.crt.is-power .tv__powerline {
+  animation: tv-power-on 620ms cubic-bezier(0.16, 0.8, 0.3, 1) forwards;
+}
+@keyframes tv-power-on {
+  0%   { scale: 1 0.0025; opacity: 1; filter: brightness(3.4); }
+  16%  { scale: 1 0.01;   opacity: 1; filter: brightness(3); }
+  46%  { scale: 1 1;      opacity: 1; filter: brightness(1.6); }
+  80%  { scale: 1 1;      opacity: 1; filter: brightness(1); }
+  100% { scale: 1 1;      opacity: 0; filter: brightness(1); }
+}
+
+/* 影片层：两个 video 轮转，只切 opacity，不给单个元素换 src（会黑一帧） */
+.tv__film {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: transparent;
+}
+.tv__film::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  box-shadow: inset 0 0 min(16vw, 220px) rgba(0, 0, 0, 0.26);
+}
+.tv__video {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: blur(0.4px) saturate(1.16) contrast(1.08) brightness(1.03);
+  opacity: 0;
+  transition: opacity var(--tv-xfade, 800ms) linear;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+.tv__video.is-front { opacity: 1; }
+
+/* ── 片源单（老片台片单）──────────────────────────────────────────────
+   复刻 arley-fun 的 .egg__dial：面板是 .crtv 的直接子元素、fixed 浮层，
+   绝不进 .crt__screen（屏幕里是 WebGL 画布）。开关机不碰它。
+   状态位挂在舞台根 .crtv：is-stations / is-watching / is-dial-hidden。 */
+.tv__dial {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  width: clamp(268px, 23vw, 340px);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, #1a1510 0%, #12100c 100%);
+  border-left: 1px solid rgba(247, 235, 211, 0.12);
+  box-shadow: -24px 0 60px -30px rgba(0, 0, 0, 0.9);
+  opacity: 0;
+  translate: 6% 0;
+  pointer-events: none;
+  transition:
+    opacity 300ms var(--ease),
+    translate 380ms var(--ease);
+}
+
+.crtv.is-stations .tv__dial {
+  opacity: 1;
+  translate: 0 0;
+  pointer-events: auto;
+}
+
+/* 收起不是移除：面板滑到画外，电视同时回到正中（layoutStations 重排） */
+.crtv.is-stations .tv__dial.is-collapsed {
+  translate: 104% 0;
+  pointer-events: none;
+}
+
+/* 在放片子时片单退到背景里（悬停或键盘聚焦立刻回来）——
+   整栏一直亮着，屏幕里那部就成了「网页上的一个播放器」，而不是电视在放。
+   换台/缓冲那几秒会自动恢复，因为那时候用户要看的就是这张表。
+   只在桌面那栏做：手机上片单是底部抽屉，压暗一整块只会读成「坏了」。 */
+@media (min-width: 901px) {
+  .crtv.is-stations.is-watching .tv__dial { opacity: 0.4; }
+
+  .crtv.is-stations.is-watching .tv__dial:hover,
+  .crtv.is-stations.is-watching .tv__dial:focus-within { opacity: 1; }
+}
+
+.tv__dial-head {
+  position: relative;
+  padding: 22px 20px 16px;
+  border-bottom: 1px solid rgba(247, 235, 211, 0.08);
+}
+.tv__dial-kicker {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.26em;
+  color: #b8534a;
+}
+.tv__dial-title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: #f2e6cd;
+}
+.tv__dial-meta {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: rgba(247, 235, 211, 0.42);
+}
+.tv__dial-hide {
+  position: absolute;
+  top: 20px;
+  right: 16px;
+  padding: 4px 9px;
+  border: 1px solid rgba(247, 235, 211, 0.16);
+  border-radius: 999px;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: rgba(247, 235, 211, 0.55);
+  cursor: pointer;
+  transition:
+    color 140ms linear,
+    border-color 140ms linear;
+}
+.tv__dial-hide:hover,
+.tv__dial-hide:focus-visible {
+  color: #f2e6cd;
+  border-color: rgba(247, 235, 211, 0.34);
+}
+.tv__dial-list {
+  flex: 1;
+  margin: 0;
+  padding: 4px 0 8px;
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.tv__chan {
+  display: grid;
+  grid-template-columns: 26px 1fr 14px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 18px 11px 20px;
+  border: 0;
+  border-top: 1px solid rgba(247, 235, 211, 0.06);
+  background: none;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  transition: background 140ms linear;
+}
+.tv__chan-item:first-child .tv__chan { border-top: 0; }
+.tv__chan:hover { background: rgba(247, 235, 211, 0.06); }
+.tv__chan:focus-visible { outline: 2px solid var(--red); outline-offset: -2px; }
+.tv__chan-no {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: rgba(247, 235, 211, 0.32);
+}
+.tv__chan-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.tv__chan-title {
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.35;
+  letter-spacing: 0.02em;
+  color: #e8dcc4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tv__chan-sub {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: rgba(247, 235, 211, 0.36);
+}
+.tv__chan-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tv__chan-mark {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(247, 235, 211, 0.2);
+}
+.tv__chan.is-playing .tv__chan-no,
+.tv__chan.is-playing .tv__chan-title { color: #f0bcb2; }
+.tv__chan.is-playing .tv__chan-mark {
+  background: #d2463a;
+  animation: tv-chan-dot 1.8s ease-out infinite;
+}
+@keyframes tv-chan-dot {
+  0% { box-shadow: 0 0 0 0 rgba(210, 70, 58, 0.55); }
+  70%, 100% { box-shadow: 0 0 0 6px rgba(210, 70, 58, 0); }
+}
+/* 放不出来的一部：变暗 + 后缀，不弹窗不报错，也不把它从片单里删掉 */
+.tv__chan.is-lost { opacity: 0.45; }
+.tv__chan.is-lost .tv__chan-sub::after {
+  content: "信号弱";
+  flex: none;
+  color: rgba(240, 188, 178, 0.75);
+}
+.tv__dial-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  padding: 12px 20px 16px;
+  border-top: 1px solid rgba(247, 235, 211, 0.08);
+  font-size: 10.5px;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+  color: rgba(247, 235, 211, 0.3);
+}
+.tv__dial-add {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 11px;
+  border: 1px solid rgba(247, 235, 211, 0.2);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: rgba(247, 235, 211, 0.72);
+  cursor: pointer;
+  transition: color 140ms linear, border-color 140ms linear;
+}
+.tv__dial-add:hover,
+.tv__dial-add:focus-within {
+  color: #f2e6cd;
+  border-color: rgba(247, 235, 211, 0.44);
+}
+.tv__dial-add input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.tv__dial-add:focus-within { outline: 2px solid var(--red); outline-offset: 2px; }
+/* 收起之后右侧留一枚竖着的小标签，再点就展开 */
+.tv__dial-tab {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 7px;
+  border: 1px solid rgba(247, 235, 211, 0.14);
+  border-right: 0;
+  border-radius: 8px 0 0 8px;
+  background: #1a1510;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  color: rgba(247, 235, 211, 0.7);
+  writing-mode: vertical-rl;
+  cursor: pointer;
+  translate: 0 -50%;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 240ms var(--ease),
+    color 140ms linear;
+}
+.tv__dial-tab span {
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: #b8534a;
+}
+.crtv.is-stations.is-dial-hidden .tv__dial-tab {
+  opacity: 1;
+  pointer-events: auto;
+}
+.tv__dial-tab:hover { color: #f2e6cd; }
+
+/* 手机上没有右侧栏：片单变底部抽屉，电视让出下半屏 */
+@media (max-width: 900px) {
+  .tv__dial {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    height: min(46vh, 400px);
+    border-left: 0;
+    border-top: 1px solid rgba(247, 235, 211, 0.14);
+    box-shadow: 0 -24px 56px -28px rgba(0, 0, 0, 0.9);
+    translate: 0 8%;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .crtv.is-stations .tv__dial { translate: 0 0; }
+  .crtv.is-stations .tv__dial.is-collapsed { translate: 0 100%; }
+  .tv__dial-head { padding: 16px 16px 12px; }
+  .tv__dial-title { font-size: 17px; }
+  .tv__chan { padding: 12px 14px 12px 16px; }
+  .tv__dial-tab {
+    top: auto;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    right: 16px;
+    padding: 10px 14px;
+    border: 1px solid rgba(247, 235, 211, 0.16);
+    border-radius: 999px;
+    writing-mode: horizontal-tb;
+    translate: none;
+  }
+}
+
+/* 手机横屏：屏幕只有 390 高，46vh 的抽屉会把电视压没，收窄一档 */
+@media (max-width: 900px) and (max-height: 520px) {
+  .tv__dial { height: min(38vh, 280px); }
+  .tv__dial-head { padding: 12px 16px 10px; }
+  .tv__chan { padding: 9px 14px 9px 16px; }
+  .tv__chan-title { font-size: 13px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tv__dial { transition-duration: 200ms; }
+  .tv__dial-tab { transition-duration: 200ms; }
+  .tv__chan.is-playing .tv__chan-mark { animation: none; }
+  .tv__powerline { display: none; }
+  .tv__scan::after,
+  .tv__tear { animation: none; }
+}
+
+/* ── B 区 · 显示屏幕：嵌进机壳开口（洞）的整件显示管 ───────────────────── */
+.crt__display {
+  --crt-glass-ring: 2px;
+  --crt-glass-fade: 1px;
+  --crt-osd-inset-x: 17%;
+  --crt-osd-inset-y: 15%;
+  position: absolute;
+  inset: 0;
+}
+
+/* ── A 区 · 机壳开口：斜面内沿 INNER_D 围出来的那个洞 ─────────────────── */
+.crt__aperture {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  clip-path: url(#crt-curve);
+  background-color: #0b0907;
+  transition: background-color 300ms var(--ease), background-image 300ms var(--ease);
+}
+
+.crt__screen svg { width: 100%; height: 100%; }
+
+@media (max-width: 1080px) {
+  .crt { margin: 8px auto 0; }
+}
+@media (max-width: 900px) {
+  .crt__chin { gap: 10px; }
+}
+
+/* ── 整机小电视：触屏长按不弹动作表、不拖出文件，也不给选中文字 ── */
+.crt {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+  margin-left: auto;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ── B 区 · 荧光屏：显示屏幕里唯一发光的区域 ────────────────────────── */
+.crt__screen {
+  position: absolute;
+  inset: calc(var(--crt-glass-ring) - var(--crt-glass-fade));
+  z-index: 0;
+  background: transparent;
+  clip-path: url(#crt-curve);
+  -webkit-mask-image:
+    linear-gradient(to right, transparent 0, #000 var(--crt-glass-fade), #000 calc(100% - var(--crt-glass-fade)), transparent 100%),
+    linear-gradient(to bottom, transparent 0, #000 var(--crt-glass-fade), #000 calc(100% - var(--crt-glass-fade)), transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-image:
+    linear-gradient(to right, transparent 0, #000 var(--crt-glass-fade), #000 calc(100% - var(--crt-glass-fade)), transparent 100%),
+    linear-gradient(to bottom, transparent 0, #000 var(--crt-glass-fade), #000 calc(100% - var(--crt-glass-fade)), transparent 100%);
+  mask-composite: intersect;
+}
+
+/* ── B 区 · 玻璃：不发光的外圈 + 反光 / CRT 元素 ─────────────────────── */
+.crt__glass {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  clip-path: url(#crt-curve);
+}
+.crt__glass-edge {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  pointer-events: none;
+}
+.crt__glass-edge path {
+  vector-effect: non-scaling-stroke;
+  stroke-linejoin: round;
+}
+.crt__glass-edge--halo { stroke: rgba(7, 9, 8, 0.16); stroke-width: 6px; }
+.crt__glass-edge--fade { stroke: rgba(6, 7, 6, 0.32); stroke-width: 4px; }
+.crt__glass-edge--core { stroke: rgba(4, 5, 4, 0.72); stroke-width: 2px; }
+
+/* ── B 区 · 屏显 OSD：换台 / 音量那一下打在荧光屏上的字 ──────────────── */
+.tv__osd {
+  position: absolute;
+  top: var(--crt-osd-inset-y);
+  right: var(--crt-osd-inset-x);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 9px;
+  border-radius: 3px;
+  background: rgba(6, 6, 6, 0.5);
+  font-family: var(--font-mono);
+  font-size: clamp(11px, 1.6vmin, 15px);
+  letter-spacing: 0.14em;
+  color: #e9f2d9;
+  text-shadow: 0 0 10px rgba(176, 232, 148, 0.5);
+  opacity: 0;
+  transition: opacity 200ms linear;
+  pointer-events: none;
+}
+.tv__osd.is-on { opacity: 1; }
+.tv__osd-meter { display: flex; align-items: center; gap: 2px; }
+.tv__osd[data-mode="ch"] .tv__osd-meter,
+.tv__osd[data-mode="sound"] .tv__osd-meter,
+.tv__osd[data-mode="power"] .tv__osd-meter { display: none; }
+.tv__osd[data-mode="sound"],
+.tv__osd[data-mode="power"] { letter-spacing: 0.08em; }
+.tv__osd-meter i { width: 4px; height: 9px; border-radius: 1px; background: rgba(233, 242, 217, 0.18); }
+.tv__osd-meter i.is-lit { background: currentColor; box-shadow: 0 0 6px rgba(176, 232, 148, 0.55); }
+.tv__osd-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* 玻璃上的一次反光 + 管面暗角 + 扫描线 */
+.crt__glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background:
+    radial-gradient(146% 88% at 50% -18%, rgba(255, 250, 238, 0.1), rgba(255, 250, 238, 0) 50%),
+    linear-gradient(116deg, rgba(255, 250, 238, 0.075) 0%, rgba(255, 250, 238, 0.025) 14%, rgba(255, 250, 238, 0) 31%),
+    repeating-linear-gradient(90deg, rgba(255, 72, 62, 0.045) 0 1px, rgba(64, 255, 128, 0.04) 1px 2px, rgba(72, 118, 255, 0.05) 2px 3px),
+    repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.3) 0 1px, rgba(0, 0, 0, 0) 1px 3px),
+    radial-gradient(114% 122% at 50% 46%, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.26) 74%, rgba(0, 0, 0, 0.58) 100%),
+    linear-gradient(90deg, rgba(255, 66, 52, 0.14) 0%, rgba(255, 66, 52, 0) 7%),
+    linear-gradient(270deg, rgba(58, 132, 255, 0.14) 0%, rgba(58, 132, 255, 0) 7%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='80' height='80' filter='url(%23g)' opacity='.55'/%3E%3C/svg%3E");
+  background-blend-mode: normal, normal, normal, normal, normal, normal, normal, soft-light;
+  transition: opacity 260ms var(--ease);
+}
+
+/* 上了 WebGL 管面之后，点栅 / 黑缝 / 会聚误差 / 暗角 / 噪点 / 玻璃反光全归着色器。
+   这层 CSS 顶部弧面聚光会在屏幕四周压出一圈灰白高光；is-tube 挂上时整层关掉。 */
+.crt__aperture.is-tube .crt__glass::after { opacity: 0; }
+
+/* 管面画布：铺满玻璃，连圆角边上那一圈也归它画。
+   压在纹理源 video 之上、玻璃反光 ::after 之下；没挂上 WebGL 时整块撤掉，
+   让底下的 video + CSS 玻璃层接管，绝不黑屏。 */
+.crt__tube {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: block;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity var(--tv-film-fade, 480ms) linear;
+  pointer-events: none;
+}
+.crt__tube:not(.is-live) { display: none; }
+
+/* 降级态：WebGL 挂不上时 player/view.ts 给 .crt__aperture 加 is-fallback，
+   才把纹理源 video 放回可见（配合上面恢复的 CSS 玻璃层），绝不黑屏。 */
+.crt__aperture.is-fallback .crt__glass::after { opacity: 1; transition: none; }
+.crt__aperture.is-fallback .tv__video { opacity: 1; transition: none; }
+
+/* 管面自己画到边，被曲线裁掉的那点角要露出管壳的黑，不能露底色。 */
+.crt__aperture.is-tube { background-color: #050403; }
+
+/* 行场不同步的那点味道：一条极淡的亮带缓慢上移 */
+.crt__screen::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 1;
+  height: 38%;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(255, 246, 228, 0) 0%, rgba(255, 246, 228, 0.045) 46%, rgba(255, 246, 228, 0.075) 52%, rgba(255, 246, 228, 0.045) 58%, rgba(255, 246, 228, 0) 100%);
+  opacity: 0.7;
+  animation: crt-roll 9.5s linear infinite;
+  transition: opacity 300ms var(--ease);
+}
+@keyframes crt-roll {
+  from { translate: 0 -110%; }
+  to { translate: 0 290%; }
+}
+
+/* 下巴：左侧电源键 + 指示灯，右端一排喇叭槽 */
+.crt__chin {
+  position: absolute;
+  display: flex;
+  color: #8c7b64;
+  font-size: 12.5px;
+  left: 28px;
+  right: 20px;
+  bottom: 11px;
+  height: 34px;
+  gap: 9px;
+  align-items: center;
+  background: transparent;
+}
+.crt__chin::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 50%;
+  width: 66px;
+  height: 26px;
+  translate: 0 -50%;
+  border-radius: 13px;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.26), rgba(255, 246, 228, 0.025));
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6), inset 0 -1px 0 rgba(255, 246, 228, 0.06), 0 1px 0 rgba(255, 246, 228, 0.05);
+}
+.crt__chin::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 50%;
+  width: 92px;
+  height: 17px;
+  translate: 0 -50%;
+  border-radius: 3px;
+  background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, 0.55) 0 2px, rgba(255, 246, 228, 0.07) 2px 3px, rgba(0, 0, 0, 0) 3px 5px);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55), 0 1px 0 rgba(255, 246, 228, 0.05);
+}
+
+/* 下巴上的圆钮：同一副塑料。电源键与换台/音量键共用这层材质 */
+.crt__chin .knob {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 36% 28%, #4c423a 0%, #2e2822 56%, #1a1511 100%);
+  box-shadow: 0 1px 0 rgba(255, 246, 228, 0.14), 0 2px 5px rgba(0, 0, 0, 0.55), inset 0 -1px 2px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  scale: 1;
+  transition: scale 160ms var(--ease);
+}
+.crt__chin .knob--power { width: 26px; height: 26px; }
+.crt__chin .knob--power::before {
+  content: "";
+  position: absolute;
+  inset: -9px;
+  border-radius: 50%;
+}
+.crt__chin .knob--power svg {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: #d8c6a9;
+  stroke-width: 2;
+  stroke-linecap: round;
+  opacity: 0.92;
+  transition: opacity 220ms var(--ease), stroke 220ms var(--ease);
+}
+.crt__chin .knob--power:hover svg { stroke: #f0e2c8; }
+.crt__chin .knob--power:active { scale: 0.9; }
+.crt__chin .knob--power:focus-visible { outline: 2px solid var(--red); outline-offset: 3px; }
+
+/* 彩蛋里的四颗软键：换台 ∧ ∨ / 音量 + −，和电源键同材质，小一号 */
+.crt__keys {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 23px;
+  margin-left: 30px;
+}
+.crt__keys::before {
+  content: "";
+  position: absolute;
+  inset: -4px -10px;
+  border-radius: 17px;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.3), rgba(255, 246, 228, 0.028));
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.62), inset 0 -1px 0 rgba(255, 246, 228, 0.07), 0 1px 0 rgba(255, 246, 228, 0.05);
+}
+.crt__keys-pair { display: flex; align-items: center; gap: 6px; }
+.crt__chin .knob--soft { width: 22px; height: 22px; }
+.crt__chin .knob--soft::before { content: ""; position: absolute; inset: -3px; border-radius: 50%; }
+.crt__chin .knob--soft svg {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: #d8c6a9;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.88;
+  transition: opacity 160ms var(--ease), stroke 160ms var(--ease), fill 160ms var(--ease);
+}
+.crt__chin .knob--ch svg { fill: #d0bda0; stroke-linejoin: round; }
+.crt__chin .knob--soft:hover svg { stroke: #f0e2c8; }
+.crt__chin .knob--ch:hover svg { fill: #f0e2c8; }
+.crt__chin .knob--soft:active { scale: 0.88; }
+.crt__chin .knob--soft:focus-visible { outline: 2px solid var(--red); outline-offset: 3px; }
+.crt.is-off .knob--soft svg { opacity: 0.4; }
+
+/* 指示灯：一颗塑料透镜 */
+.crt__chin .dot {
+  width: 7px;
+  height: 7px;
+  margin: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 32%, #ffd8d1 0 16%, #e0413a 44%, #8d1f19 100%);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 0 9px 1px rgba(214, 58, 48, 0.75);
+  transition: opacity 260ms var(--ease), box-shadow 260ms var(--ease);
+}
+.crt.is-off .knob--power svg { opacity: 0.5; }
+.crt.is-off .dot { opacity: 0.24; box-shadow: none; }
+
+/* 开机：屏幕打在塑料壳上的暖光（机壳外观只在此状态改写） */
+.crt.is-on .crt__bezel {
+  box-shadow:
+    0 0 0 4px #0f0c09,
+    0 0 0 5px rgba(255, 246, 228, 0.07),
+    0 0 52px -2px rgba(255, 226, 184, 0.26),
+    0 7px 16px -7px rgba(0, 0, 0, 0.9),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.85),
+    inset 0 6px 18px rgba(0, 0, 0, 0.55),
+    inset 0 -4px 10px rgba(255, 246, 228, 0.045),
+    inset 0 0 58px rgba(0, 0, 0, 0.5);
+}
+.crt.is-on .crt__aperture { background: #0c0a08; }
+.crt.is-on .crt__screen::before { z-index: 3; opacity: 0.4; }
+
+/* CRT 关机：画面（信号层 / 影片层 / 管面）垂直坍缩成一条亮线，再熄灭。
+   直接子层是 .tv__signal / .tv__film / .crt__tube（video 嵌在 .tv__film 里，
+   不能写成 .crt__screen > video），否则 is-off 加上时根本没有可坍缩的元素。 */
+.crt__screen > .tv__signal,
+.crt__screen > .tv__film,
+.crt__screen > .crt__tube {
+  transition: scale 260ms cubic-bezier(0.4, 0, 0.2, 1), filter 260ms var(--ease), opacity 180ms var(--ease) 220ms;
+}
+.crt.is-off .crt__screen > .tv__signal,
+.crt.is-off .crt__screen > .tv__film,
+.crt.is-off .crt__screen > .crt__tube {
+  scale: 1 0.004;
+  filter: brightness(2.6);
+  opacity: 0;
+}
+.crt.is-off .crt__aperture {
+  background-color: #0a0806;
+  background-image: radial-gradient(126% 104% at 34% 16%, #2c2924 0%, #14110d 54%, #0a0806 100%);
+}
+.crt.is-off .crt__glass::after { opacity: 0; }
+.crt.is-off .crt__screen::before { opacity: 0; }
+/* 待机时收掉开机暖光（is-on 仍挂在元素上，靠这里后定义胜出，box-shadow 走过渡） */
+.crt.is-off .crt__bezel {
+  box-shadow:
+    0 0 0 4px #0f0c09,
+    0 0 0 5px rgba(255, 246, 228, 0.05),
+    0 7px 16px -7px rgba(0, 0, 0, 0.9),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.85),
+    inset 0 6px 18px rgba(0, 0, 0, 0.55),
+    inset 0 0 58px rgba(0, 0, 0, 0.5);
+}
+
+@media (max-width: 720px) {
+  .crt__frame { border-radius: 20px; padding: 15px 16px 46px; }
+  .crt__bezel {
+    box-shadow:
+      0 0 0 3px #0f0c09,
+      0 0 0 4px rgba(255, 246, 228, 0.07),
+      0 6px 13px -6px rgba(0, 0, 0, 0.9),
+      inset 0 0 0 1px rgba(0, 0, 0, 0.85),
+      inset 0 4px 13px rgba(0, 0, 0, 0.52),
+      inset 0 -3px 8px rgba(255, 246, 228, 0.04),
+      inset 0 0 42px rgba(0, 0, 0, 0.48);
+  }
+  .crt__chin { left: 23px; right: 16px; bottom: 8px; height: 30px; gap: 8px; }
+  .crt__chin::before { left: -6px; width: 58px; height: 23px; border-radius: 12px; }
+  .crt__chin::after { width: 64px; height: 14px; }
+  .crt__chin .knob--power { width: 24px; height: 24px; }
+  .crt__chin .knob--power svg { width: 13px; height: 13px; }
+  .crt__keys { gap: 16px; margin-left: 20px; }
+  .crt__keys-pair { gap: 5px; }
+  .crt__keys::before { inset: -3px -8px; border-radius: 15px; }
+  .crt__chin .knob--soft { width: 20px; height: 20px; }
+  .crt__chin .knob--soft svg { width: 11px; height: 11px; }
+}
+
+/* 显示器屏的外边框：一整圈连续的凸面斜面（不是四片梯形） */
+.crt__bezel {
+  position: relative;
+  z-index: 6;
+  border-radius: 16px / 18px;
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+  transition: box-shadow 320ms var(--ease);
+  background-color: #0b0907;
+  box-shadow:
+    0 0 0 4px #0a0806,
+    0 0 0 7px rgba(255, 246, 228, 0.055),
+    0 0 0 8px rgba(0, 0, 0, 0.42),
+    0 8px 18px -7px rgba(0, 0, 0, 0.9),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.9),
+    inset 0 0 0 2px rgba(255, 250, 238, 0.035),
+    inset 0 6px 20px rgba(0, 0, 0, 0.55),
+    inset 0 -4px 10px rgba(255, 246, 228, 0.05),
+    inset 0 0 24px rgba(0, 0, 0, 0.34),
+    inset 0 0 64px rgba(0, 0, 0, 0.46);
+}
+
+/* 曲线定义：0×0 不占位、不参与命中，只给 clip-path 当资源 */
+.crt__defs { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }
+
+.crt__slope {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+.crt__slope-fill { stroke: none; }
+
+/* 显像区里跟着凸面走的一层极淡暗角 */
+.crt__bezel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  clip-path: url(#crt-curve);
+  background: radial-gradient(116% 118% at 50% 46%, rgba(0, 0, 0, 0) 58%, rgba(0, 0, 0, 0.11) 100%);
+  pointer-events: none;
+}
+
+/* 塑料壳：90 年代注塑件的正面 */
+.crt__frame {
+  position: relative;
+  border-radius: 26px;
+  padding: 18px 20px 56px;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='96' height='96' filter='url(%23n)' opacity='.6'/%3E%3C/svg%3E"),
+    radial-gradient(124% 96% at 26% -6%, rgba(255, 246, 228, 0.07), rgba(255, 246, 228, 0) 58%),
+    linear-gradient(172deg, #40372d 0%, #342d25 34%, #282219 74%, #1d1813 100%),
+    linear-gradient(to top, #17120e 0 9px, rgba(23, 18, 14, 0) 9px),
+    linear-gradient(to top, rgba(255, 246, 228, 0.05) 0 1px, rgba(0, 0, 0, 0) 1px);
+  background-blend-mode: overlay, normal, normal, normal, normal;
+  box-shadow:
+    0 34px 62px -30px rgba(24, 19, 14, 0.62),
+    0 2px 5px rgba(24, 19, 14, 0.18),
+    inset 0 0 0 1px rgba(255, 246, 228, 0.07),
+    inset 0 0 0 2px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 246, 228, 0.14),
+    inset 0 -3px 6px rgba(0, 0, 0, 0.58);
+}
+.crt__frame::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    linear-gradient(to bottom, rgba(255, 246, 228, 0.085) 0, rgba(255, 246, 228, 0) 34px),
+    linear-gradient(to top, rgba(0, 0, 0, 0.4) 0, rgba(0, 0, 0, 0) 52px),
+    linear-gradient(104deg, rgba(255, 246, 228, 0.06) 0%, rgba(255, 246, 228, 0) 30%, rgba(0, 0, 0, 0.16) 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crt__screen > video,
+  .crt__screen > svg,
+  .crt__screen > canvas,
+  .crt__aperture,
+  .crt__glass::after,
+  .crt__chin .dot,
+  .crt__chin .knob--power,
+  .crt__chin .knob--power svg { transition-duration: 0ms; }
+  .crt__screen::before { animation: none; opacity: 0; }
+  .tv__scan::after,
+  .tv__tear,
+  .tv__chan.is-playing .tv__chan-mark { animation: none; }
+  .tv__bars { transition-duration: 200ms; }
+}

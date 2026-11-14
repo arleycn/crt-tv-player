@@ -1,0 +1,58 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(120% 90% at 50% -10%, #241c14 0%, #15110d 60%, #0d0a07 100%);
+  color: #e8dcc4;
+  font-family: var(--font-serif);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+.noscript {
+  padding: 40px;
+  text-align: center;
+  font-family: var(--font-mono);
+}
+
+/* ── 全屏舞台：复刻 arley-fun 的 .egg 覆盖层 ────────────────────────────
+   电视是 fixed 定位的独立元素，由 layoutTv() 按「可用区 = 视口 − 片单」缩放居中；
+   片单是 fixed 浮层，不占布局流，永不压住电视屏幕。 */
+.crtv {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  z-index: 1;
+  isolation: isolate;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+}
+
+/* 复刻 arley-fun 的 lifted CRT：整台电视是 fixed 的独立合成层，
+   layoutTv() 只改 transform（translate + scale），在「视口 − 片单」的可用区里居中。
+   基准宽固定，缩放不触发布局重排，管面 WebGL 画布也跟着一起缩放。 */
+.crtv__stage {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 560px;
+  transform-origin: 0 0;
+  will-change: transform;
+}
